@@ -76,7 +76,7 @@ IotWebConfParameterGroup mqttGroup = IotWebConfParameterGroup("mqtt", "MQTT conf
 IotWebConfTextParameter mqttServerParam = IotWebConfTextParameter("MQTT server", "mqttServer", mqttServerValue, STRING_LEN);
 IotWebConfTextParameter mqttUserNameParam = IotWebConfTextParameter("MQTT user", "mqttUser", mqttUserNameValue, STRING_LEN);
 IotWebConfPasswordParameter mqttUserPasswordParam = IotWebConfPasswordParameter("MQTT password", "mqttPass", mqttUserPasswordValue, STRING_LEN);
-IotWebConfTextParameter mqttPrefixPrefix = IotWebConfTextParameter("MQTT topic prefix", "mqttPrefix", mqttPrefixValue, STRING_LEN);
+IotWebConfTextParameter mqttPrefixPrefix = IotWebConfTextParameter("MQTT topic prefix (no / ending)", "mqttPrefix", mqttPrefixValue, STRING_LEN);
 IotWebConfNumberParameter mqttPortParam = IotWebConfNumberParameter("MQTT port", "mqttPort", mqttPortValue, NUMBER_LEN, "1883", "1..65535", "min='1' max='65535' step='1'");
 
 IotWebConfParameterGroup fanGroup = IotWebConfParameterGroup("timing", "Status Publich Threshold");
@@ -180,8 +180,8 @@ void setup()
     maxStatus=tmp.toFloat()*1000;
   }
   
-  mqttStatusTopic = String(mqttPrefixValue) + "status";
-  mqttCmdTopic = String(mqttPrefixValue) + "+/set";
+  mqttStatusTopic = String(mqttPrefixValue) + "/status";
+  mqttCmdTopic = String(mqttPrefixValue) + "/+/set";
 
   // -- Set up required URL handlers on the web server.
   server.on("/", handleRoot);
