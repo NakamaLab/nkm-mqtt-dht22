@@ -4,6 +4,9 @@
 #include <ArduinoJson.h>
 #include "DHT.h"
 #include "time.h"
+#include <Wire.h>
+#include <BH1750.h>
+
 // PIN DEFINITION
 
 #define STATUS_PIN LED_BUILTIN
@@ -87,8 +90,10 @@ IotWebConfNumberParameter fanThreshold = IotWebConfNumberParameter("Max Time bet
 // STATUS VARIABLES
 struct tm timeinfo;
 float lastTemp = -999;
+float lastLux=-999;
 float humidity=0;
 float temperature=0;
+float lux;
 
 // THROTTLING VARIABLES
 unsigned long now = millis();
@@ -114,6 +119,12 @@ DHT dht(DHTPIN, DHTTYPE);
 void handleRoot();
 void mqttMessageReceived(char *topic, byte *payload, unsigned int length);
 
+//--------------
+// LIGTH SENSOR SETUP
+//--------------
+#define LUX_STATUS_THRESHOLD 50 // TEMPERATURE SENSITIVITY TO SEND UPDATES
+BH1750 lightMeter;
+
 void setup()
 {
   
@@ -122,7 +133,8 @@ void setup()
   while (!Serial)
     ;
   dht.begin();
-  
+  Wire.begin();
+  lightMeter.begin();
   
   // iotWebConf INIT
   mqttGroup.addItem(&mqttServerParam);
@@ -190,7 +202,7 @@ void setup()
   server.onNotFound([]()
                     { iotWebConf.handleNotFound(); });
   // MQTT INIT
-  mqttClient.setServer(mqttServerValue, 1883);
+  mqttClient.setServer(mqttServerValue, mqttPort);
   mqttClient.setCallback(mqttMessageReceived);
 
   // NTPM INIT
@@ -267,7 +279,7 @@ void wifiConnected()
 
 boolean connectMqtt()
 {
-  if (1000 > now - lastMqttConnectionAttempt)
+  if (5000 > now - lastMqttConnectionAttempt)
   {
     // Do not repeat within 1 sec.
     return false;
@@ -290,7 +302,7 @@ boolean connectMqttOptions()
 {
   boolean sucess = false;
 
-  if (mqttUserPasswordValue[0] != '\0')
+  if (mqttUserPasswordValue[0] != '\0' && mqttUserNameValue[0] != '\0' )
   {
     sucess = mqttClient.connect(iotWebConf.getThingName(), mqttUserNameValue, mqttUserPasswordValue);
   }
@@ -325,6 +337,7 @@ void mqttMessageReceived(char *topic, byte *payload, unsigned int length)
     // clena variables to force refresh
     lastStatus=0;
     lastTemp=-999;
+    lastLux=-999;
   }
 
   if (strstr(topic, "/reset/") != NULL)
@@ -339,13 +352,19 @@ void mqttMessageReceived(char *topic, byte *payload, unsigned int length)
 // MQTT SEND STATUS
 void publishStatus()
 {
-  
+
+  bool threashold=false;
   // minimun period between status not met
   if (now - lastStatus < minStatus)
     return;
 
-  // maximun period beween status and min temperature change not met
-  if (abs(lastTemp - temperature) < TEMP_STATUS_THRESHOLD &&  (now - lastStatus) <  maxStatus )
+  if (abs(lastTemp - temperature) > TEMP_STATUS_THRESHOLD )
+    threashold=true;
+  else if (abs(lastLux - lux) > LUX_STATUS_THRESHOLD )
+    threashold=true;
+  
+  // maximun period beween status and min value change not met
+  if (!threashold &&  (now - lastStatus) <  maxStatus )
     return;
   
   const size_t bufferSize = JSON_OBJECT_SIZE(8);
@@ -353,6 +372,7 @@ void publishStatus()
   JsonObject root = jsonBuffer.to<JsonObject>();
   root["temperature"] = temperature;
   root["humidity"] = humidity;
+  root["lux"] = lux;
   
   /*char buf[50];
   sprintf(buf,  "%A, %B %d %Y %H:%M:%S",&timeinfo);
@@ -366,6 +386,7 @@ void publishStatus()
   {
     lastStatus = now;
     lastTemp = temperature;
+    lastLux= lux;
     Serial.println(message);
   }
   else
@@ -424,6 +445,12 @@ void tempLoop()
   
   if (isnan(humidity) || isnan(temperature)) {
     Serial.println(F("Failed to read from DHT sensor!"));
+    return;
+  }
+
+  lux = lightMeter.readLightLevel();
+  if (isnan(lux)) {
+    Serial.println(F("Failed to read from BH1750  sensor!"));
     return;
   }
 }
