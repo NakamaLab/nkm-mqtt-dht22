@@ -1,4 +1,3 @@
-#include <Arduino.h>
 #include <PubSubClient.h>
 #include <IotWebConf.h>
 #include <IotWebConfUsing.h> // This loads aliases for easier class names.
