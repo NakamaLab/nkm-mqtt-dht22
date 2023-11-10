@@ -11,12 +11,12 @@
 
 #define STATUS_PIN LED_BUILTIN
 #ifdef ESP8266
-#define DHTPIN D4 
+#define DHTPIN D4
 // -- When FACTORY_RESET_BUTTON_PIN is pulled to ground on startup, the Thing will use the initial
 //      password to buld an AP. (E.g. in case of lost password)
 #define FACTORY_RESET_BUTTON_PIN D7
 #elif ESP32
-#define DHTPIN 4 
+#define DHTPIN 4
 // -- When FACTORY_RESET_BUTTON_PIN is pulled to ground on startup, the Thing will use the initial
 //      password to buld an AP. (E.g. in case of lost password)
 #define FACTORY_RESET_BUTTON_PIN 35
@@ -125,17 +125,226 @@ void mqttMessageReceived(char *topic, byte *payload, unsigned int length);
 #define LUX_STATUS_THRESHOLD 50 // TEMPERATURE SENSITIVITY TO SEND UPDATES
 BH1750 lightMeter;
 
+
+
+
+
+// iotWebConf -Handle web requests to "/" path.
+void handleRoot()
+{
+  // -- Let IotWebConf test and handle captive portal requests.
+  if (iotWebConf.handleCaptivePortal())
+  {
+    // -- Captive portal request were already served.
+    return;
+  }
+  server.send(200, "text/html", htmlRoot);
+}
+
+// iotWebConf - CONFIG SAVED HANDLER
+void configSaved()
+{
+  Serial.println("Configuration was updated.");
+  needReset = true;
+}
+
+// iotWebConf - WIFI CONNECTED HANDLER
+void wifiConnected()
+{
+  needMqttConnect = true;
+}
+
+// SET MQTT CONNECT
+boolean connectMqttOptions()
+{
+  boolean sucess = false;
+
+  if (mqttUserPasswordValue[0] != '\0' && mqttUserNameValue[0] != '\0')
+  {
+    sucess = mqttClient.connect(iotWebConf.getThingName(), mqttUserNameValue, mqttUserPasswordValue);
+  }
+  else if (mqttUserNameValue[0] != '\0')
+  {
+    sucess = mqttClient.connect(iotWebConf.getThingName(), mqttUserNameValue, "");
+  }
+  else
+  {
+    sucess = mqttClient.connect(iotWebConf.getThingName());
+  }
+
+  return sucess;
+}
+
+// MQTT SEND STATUS
+void publishStatus()
+{
+
+  bool threashold = false;
+  // minimun period between status not met
+  if (now - lastStatus < minStatus)
+    return;
+
+  if (abs(lastTemp - temperature) > TEMP_STATUS_THRESHOLD)
+    threashold = true;
+  else if (abs(lastLux - lux) > LUX_STATUS_THRESHOLD)
+    threashold = true;
+
+  // maximun period beween status and min value change not met
+  if (!threashold && (now - lastStatus) < maxStatus)
+    return;
+
+  const size_t bufferSize = JSON_OBJECT_SIZE(8);
+  DynamicJsonDocument jsonBuffer(bufferSize);
+  JsonObject root = jsonBuffer.to<JsonObject>();
+  root["temperature"] = temperature;
+  root["humidity"] = humidity;
+  root["lux"] = lux;
+
+  /*char buf[50];
+  sprintf(buf,  "%A, %B %d %Y %H:%M:%S",&timeinfo);
+  root["time"] = buf;
+  */
+  char message[70];
+  size_t n = serializeJson(jsonBuffer, message, sizeof(message));
+
+  if (mqttClient.publish(mqttStatusTopic.c_str(), (const uint8_t *)message, n, true))
+  {
+    lastStatus = now;
+    lastTemp = temperature;
+    lastLux = lux;
+    Serial.println(message);
+  }
+  else
+  {
+    Serial.println("MQTT ERROR PUBLISHING");
+  }
+}
+
+boolean connectMqtt()
+{
+  if (5000 > now - lastMqttConnectionAttempt)
+  {
+    // Do not repeat within 1 sec.
+    return false;
+  }
+  Serial.println("Connecting to MQTT server...");
+  if (!connectMqttOptions())
+  {
+    lastMqttConnectionAttempt = now;
+    return false;
+  }
+
+  Serial.println(mqttCmdTopic);
+  // comando de power
+  mqttClient.subscribe(mqttCmdTopic.c_str());
+  publishStatus();
+  return true;
+}
+
+// MQTT COMMAND HANDLER
+void mqttMessageReceived(char *topic, byte *payload, unsigned int length)
+{
+  if (length > NUMBER_LEN)
+  {
+    Serial.println("MQTT command payload too long");
+    return;
+  }
+
+  payload[length] = '\0'; // null al final para que no siga elyendo y usarlo cono char*
+  char *chr_payload = (char *)payload;
+
+  int pinIndex = -1;
+  float val;
+  if (strstr(topic, "/refresh/") != NULL)
+  {
+    // clena variables to force refresh
+    lastStatus=0;
+    lastTemp=-999;
+    lastLux=-999;
+  }
+
+  if (strstr(topic, "/reset/") != NULL)
+  {
+    needReset=true;
+  }
+
+  publishStatus();
+
+}
+
+
+
+void timeLoop()
+{
+  /*
+  if (iotWebConf.getState() != iotwebconf::OnLine)
+    return;
+  // the second parameter is the timeout
+  if(!getLocalTime(&timeinfo,5000)){
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  */
+
+}
+#ifdef ESP8266
+bool getLocalTime(struct tm * info, uint32_t ms)
+{
+    uint32_t start = millis();
+    time_t now;
+    while((millis()-start) <= ms) {
+        time(&now);
+        localtime_r(&now, info);
+        if(info->tm_year > (2016 - 1900)){
+            return true;
+        }
+         iotWebConf.delay(10);
+    }
+    return false;
+}
+#endif
+
+void tempLoop()
+{
+  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+  humidity = dht.readHumidity();
+  // Read temperature as Celsius (the default)
+  temperature = dht.readTemperature();
+
+  if (isnan(humidity) || isnan(temperature)) {
+    Serial.println(F("Failed to read from DHT sensor!"));
+    return;
+  }
+
+  lux = lightMeter.readLightLevel();
+  if (isnan(lux)) {
+    Serial.println(F("Failed to read from BH1750  sensor!"));
+    return;
+  }
+}
+
+void internalLopp()
+{
+  if (now - lastSensorLoop < minStatus)
+    return;
+
+  timeLoop();
+  tempLoop();
+
+  lastSensorLoop = now;
+}
+
 void setup()
 {
-  
-   
+
   Serial.begin(115200);
   while (!Serial)
     ;
   dht.begin();
   Wire.begin();
   lightMeter.begin();
-  
+
   // iotWebConf INIT
   mqttGroup.addItem(&mqttServerParam);
   mqttGroup.addItem(&mqttPortParam);
@@ -182,16 +391,15 @@ void setup()
   tmp = String(fanSetPointValue);
   if (tmp.toFloat())
   {
-    minStatus=tmp.toFloat()*1000;
+    minStatus = tmp.toFloat() * 1000;
   }
-  
 
   tmp = String(fanThresholdValue);
   if (tmp.toFloat())
   {
-    maxStatus=tmp.toFloat()*1000;
+    maxStatus = tmp.toFloat() * 1000;
   }
-  
+
   mqttStatusTopic = String(mqttPrefixValue) + "/status";
   mqttCmdTopic = String(mqttPrefixValue) + "/+/set";
 
@@ -206,17 +414,16 @@ void setup()
   mqttClient.setCallback(mqttMessageReceived);
 
   // NTPM INIT
-  //configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
+  // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 }
 
 void loop()
 {
 
   now = millis();
-  
- internalLopp();
- 
+
+  internalLopp();
+
   // -- doLoop should be called as frequently as possible.
   iotWebConf.doLoop();
   mqttClient.loop();
@@ -225,232 +432,24 @@ void loop()
 
   if (needMqttConnect)
   {
-    
-    
+
     if (connectMqtt())
     {
-      needMqttConnect = false;
+            needMqttConnect = false;
     }
-
   }
   else if ((iotWebConf.getState() == iotwebconf::OnLine) && (!mqttClient.connected()))
   {
     Serial.println("MQTT reconnect");
     connectMqtt();
-  } else if (mqttClient.connected()) // si esta conectdo con mqtt
+  }
+  else if (mqttClient.connected()) // si esta conectdo con mqtt
     publishStatus();
- 
+
   if (needReset)
   {
     Serial.println("Rebooting after 1 second.");
     iotWebConf.delay(1000);
     ESP.restart();
-  }
-  
-  
-}
-
-
-
-// iotWebConf -Handle web requests to "/" path.
-void handleRoot()
-{
-  // -- Let IotWebConf test and handle captive portal requests.
-  if (iotWebConf.handleCaptivePortal())
-  {
-    // -- Captive portal request were already served.
-    return;
-  }
-  server.send(200, "text/html", htmlRoot);
-}
-
-// iotWebConf - CONFIG SAVED HANDLER
-void configSaved()
-{
-  Serial.println("Configuration was updated.");
-  needReset = true;
-}
-
-// iotWebConf - WIFI CONNECTED HANDLER
-void wifiConnected()
-{
-  needMqttConnect = true;
-}
-
-boolean connectMqtt()
-{
-  if (5000 > now - lastMqttConnectionAttempt)
-  {
-    // Do not repeat within 1 sec.
-    return false;
-  }
-  Serial.println("Connecting to MQTT server...");
-  if (!connectMqttOptions())
-  {
-    lastMqttConnectionAttempt = now;
-    return false;
-  }
-
-  Serial.println(mqttCmdTopic);
-  // comando de power
-  mqttClient.subscribe(mqttCmdTopic.c_str());
-  publishStatus();
-  return true;
-}
-// SET MQTT CONNECT
-boolean connectMqttOptions()
-{
-  boolean sucess = false;
-
-  if (mqttUserPasswordValue[0] != '\0' && mqttUserNameValue[0] != '\0' )
-  {
-    sucess = mqttClient.connect(iotWebConf.getThingName(), mqttUserNameValue, mqttUserPasswordValue);
-  }
-  else if (mqttUserNameValue[0] != '\0')
-  {
-    sucess = mqttClient.connect(iotWebConf.getThingName(), mqttUserNameValue, "");
-  }
-  else
-  {
-    sucess = mqttClient.connect(iotWebConf.getThingName());
-  }
-
-  return sucess;
-}
-
-// MQTT COMMAND HANDLER
-void mqttMessageReceived(char *topic, byte *payload, unsigned int length)
-{
-  if (length > NUMBER_LEN)
-  {
-    Serial.println("MQTT command payload too long");
-    return;
-  }
-
-  payload[length] = '\0'; // null al final para que no siga elyendo y usarlo cono char*
-  char *chr_payload = (char *)payload;
-
-  int pinIndex = -1;
-  float val;
-  if (strstr(topic, "/refresh/") != NULL)
-  {
-    // clena variables to force refresh
-    lastStatus=0;
-    lastTemp=-999;
-    lastLux=-999;
-  }
-
-  if (strstr(topic, "/reset/") != NULL)
-  {
-    needReset=true;
-  }
-  
-  publishStatus();
-  
-}
-
-// MQTT SEND STATUS
-void publishStatus()
-{
-
-  bool threashold=false;
-  // minimun period between status not met
-  if (now - lastStatus < minStatus)
-    return;
-
-  if (abs(lastTemp - temperature) > TEMP_STATUS_THRESHOLD )
-    threashold=true;
-  else if (abs(lastLux - lux) > LUX_STATUS_THRESHOLD )
-    threashold=true;
-  
-  // maximun period beween status and min value change not met
-  if (!threashold &&  (now - lastStatus) <  maxStatus )
-    return;
-  
-  const size_t bufferSize = JSON_OBJECT_SIZE(8);
-  DynamicJsonDocument jsonBuffer(bufferSize);
-  JsonObject root = jsonBuffer.to<JsonObject>();
-  root["temperature"] = temperature;
-  root["humidity"] = humidity;
-  root["lux"] = lux;
-  
-  /*char buf[50];
-  sprintf(buf,  "%A, %B %d %Y %H:%M:%S",&timeinfo);
-  root["time"] = buf;
-  */
-  char message[70];
-  size_t n = serializeJson(jsonBuffer, message, sizeof(message));
-  
-
-  if (mqttClient.publish(mqttStatusTopic.c_str(), (const uint8_t *)message, n, true))
-  {
-    lastStatus = now;
-    lastTemp = temperature;
-    lastLux= lux;
-    Serial.println(message);
-  }
-  else
-  {
-    Serial.println("MQTT ERROR PUBLISHING");
-  }
-}
-
-void internalLopp(){
-  if (now - lastSensorLoop < minStatus)
-    return;
-    
-  timeLoop();
-  tempLoop();
-  
-  lastSensorLoop = now;
-}
-
-void timeLoop()
-{
-  /*
-  if (iotWebConf.getState() != iotwebconf::OnLine)
-    return;
-  // the second parameter is the timeout 
-  if(!getLocalTime(&timeinfo,5000)){
-    Serial.println("Failed to obtain time");
-    return;
-  }
-  */
-  
-}
-#ifdef ESP8266
-bool getLocalTime(struct tm * info, uint32_t ms)
-{
-    uint32_t start = millis();
-    time_t now;
-    while((millis()-start) <= ms) {
-        time(&now);
-        localtime_r(&now, info);
-        if(info->tm_year > (2016 - 1900)){
-            return true;
-        }
-         iotWebConf.delay(10);
-    }
-    return false;
-}
-#endif
-
-void tempLoop()
-{
-  // Reading temperature or humidity takes about 250 milliseconds!
-  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
-  humidity = dht.readHumidity();
-  // Read temperature as Celsius (the default)
-  temperature = dht.readTemperature();
-  
-  if (isnan(humidity) || isnan(temperature)) {
-    Serial.println(F("Failed to read from DHT sensor!"));
-    return;
-  }
-
-  lux = lightMeter.readLightLevel();
-  if (isnan(lux)) {
-    Serial.println(F("Failed to read from BH1750  sensor!"));
-    return;
   }
 }
