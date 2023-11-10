@@ -267,6 +267,10 @@ void mqttMessageReceived(char *topic, byte *payload, unsigned int length)
   {
     needReset=true;
   }
+  if (strstr(topic, "/firmware/") != NULL)
+  {
+    //TODO: CHECK FIRMWARE
+  }
 
   publishStatus();
 

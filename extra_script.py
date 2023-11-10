@@ -1,6 +1,7 @@
 ## https://github.com/mcuw/ESP32-ghbuild-template/blob/main/extra_script.py
 ## firmware rename
 import os
+
 Import("env")
 
 # Access to global construction environment
